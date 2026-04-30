@@ -9,6 +9,7 @@
     "build": "npm run clean && tsc",
     "backtest": "node dist/examples/runBacktest.js",
     "paper": "node dist/examples/paperTrading.js",
+    "live": "node dist/examples/liveMarkets.js",
     "start": "node dist/index.js",
     "autopush": "node scripts/auto-push-on-change.mjs"
   },
