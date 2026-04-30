@@ -217,7 +217,8 @@ function testRiskEngine(): void {
   assert(!zeroSize.approved, 'rejected: size=0');
 
   const minSize = risk.evaluate(0, undefined);
-  assertEq(minSize.approvedSize, 1, 'size=0 with no combinedAsk clamped to 1');
+  assert(!minSize.approved, 'size=0 with no combinedAsk rejected');
+  assertEq(minSize.approvedSize, 0, 'size=0 approvedSize=0');
 
   const large = risk.evaluate(1000, 0.90);
   assert(large.approved, 'approved: large size, good ask');

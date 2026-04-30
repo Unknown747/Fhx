@@ -159,8 +159,3 @@ export function createMarketSnapshot(input: {
   };
 }
 
-export class PolymarketConnector {
-  async connect(): Promise<void> {
-    // stub: would initialize WebSocket clients, authentication, market discovery, and pair-state hydration
-  }
-}

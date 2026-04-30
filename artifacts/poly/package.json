@@ -11,8 +11,7 @@
     "paper": "node dist/examples/paperTrading.js",
     "live": "node dist/examples/liveMarkets.js",
     "test:full": "node dist/test/fullTest.js",
-    "start": "node dist/index.js",
-    "autopush": "node scripts/auto-push-on-change.mjs"
+    "start": "node dist/index.js"
   },
   "files": [
     "dist"
@@ -33,7 +32,9 @@
   "author": "PolyHFT-Autotrading-V3 Contributors",
   "license": "MIT",
   "dependencies": {
+    "@polymarket/clob-client": "^5.8.1",
     "dotenv": "^16.5.1",
+    "ethers": "^6.16.0",
     "yaml": "^2.3.1"
   },
   "devDependencies": {
