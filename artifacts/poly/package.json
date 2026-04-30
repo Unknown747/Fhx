@@ -32,7 +32,6 @@
   "license": "MIT",
   "dependencies": {
     "dotenv": "^16.5.1",
-    "redeem-onchain-sdk": "^1.0.1",
     "yaml": "^2.3.1"
   },
   "devDependencies": {

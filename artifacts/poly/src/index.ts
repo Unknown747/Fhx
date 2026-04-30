@@ -1,4 +1,5 @@
-require('redeem-onchain-sdk/dist/proxy.js');
+// SECURITY: 'redeem-onchain-sdk/dist/proxy.js' import disabled for safe testing.
+// require('redeem-onchain-sdk/dist/proxy.js');
 
 import { loadConfig, loadRuntimeSecrets } from './config';
 import { createMarketSnapshot, type CryptoAsset, type MarketType, type MarketSnapshot } from './connectors/polymarket';
