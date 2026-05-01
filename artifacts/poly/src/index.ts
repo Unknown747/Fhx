@@ -10,11 +10,13 @@ import { ClobOrderClient } from './connectors/clobOrderClient';
 import { BacktestEngine } from './backtesting/engine';
 import { AutoTradingEngine } from './execution/engine';
 import { RiskEngine } from './risk/engine';
-import { MarketMakingStrategy } from './strategies/marketMaking';
+import { MarketMakingStrategy }        from './strategies/marketMaking';
+import { VolumeImbalanceStrategy }     from './strategies/volumeImbalance';
+import { ResolutionArbStrategy }       from './strategies/resolutionArb';
 import { StatisticalArbitrageStrategy } from './strategies/statArb';
-import { MomentumStrategy } from './strategies/momentum';
-import { MeanReversionStrategy } from './strategies/meanReversion';
-import { MetaConfluenceStrategy } from './strategies/metaConfluence';
+import { MomentumStrategy }            from './strategies/momentum';
+import { MeanReversionStrategy }       from './strategies/meanReversion';
+import { MetaConfluenceStrategy }      from './strategies/metaConfluence';
 import {
   log,
   logKeyValue,
@@ -31,12 +33,15 @@ const CONFIG_PATH = 'config/base.yaml';
 const config  = loadConfig(CONFIG_PATH);
 const secrets = loadRuntimeSecrets();
 
+// Ordered by priority: paired-entry strategies first, single-leg after
 const strategies = [
-  new MarketMakingStrategy(),
-  new StatisticalArbitrageStrategy(),
-  new MomentumStrategy(),
-  new MeanReversionStrategy(),
-  new MetaConfluenceStrategy(),
+  new MarketMakingStrategy(),        // paired-entry: any edge > 1%
+  new VolumeImbalanceStrategy(),     // paired-entry: strong imbalance
+  new ResolutionArbStrategy(),       // paired-entry: deep discount > 4.5%
+  new StatisticalArbitrageStrategy(), // single-leg: binary identity arb
+  new MomentumStrategy(),            // single-leg: directional flow
+  new MeanReversionStrategy(),       // single-leg: fade stretched probs
+  new MetaConfluenceStrategy(),      // single-leg: multi-indicator blend
 ];
 
 const riskEngine = new RiskEngine(config.risk);
@@ -54,33 +59,33 @@ function buildSnapshots(liveData: Map<string, LiveMarketQuote>): MarketSnapshot[
     const live = liveData.get(market.slug);
 
     return createMarketSnapshot({
-      marketId:      live?.market.id      ?? market.pairGroup,
+      marketId:      live?.market.id       ?? market.pairGroup,
       slug:          market.slug,
       conditionId:   live?.market.conditionId ?? `${market.pairGroup}-condition`,
-      asset:         market.asset as CryptoAsset,
-      marketType:    market.marketType as MarketType,
+      asset:         market.asset         as CryptoAsset,
+      marketType:    market.marketType    as MarketType,
       intervalLabel: market.intervalLabel,
       prompt:        live?.market.question ?? market.prompt,
       pairGroup:     market.pairGroup,
       referencePrice:market.referencePrice,
-      yesTokenId:    live?.yesTokenId  ?? market.yesTokenId,
-      noTokenId:     live?.noTokenId   ?? market.noTokenId,
-      yesAsk:        live?.yesAsk      ?? market.yesAsk,
-      noAsk:         live?.noAsk       ?? market.noAsk,
-      yesBid:        live?.yesBid      ?? market.yesBid,
-      noBid:         live?.noBid       ?? market.noBid,
+      yesTokenId:    live?.yesTokenId      ?? market.yesTokenId,
+      noTokenId:     live?.noTokenId       ?? market.noTokenId,
+      yesAsk:        live?.yesAsk          ?? market.yesAsk,
+      noAsk:         live?.noAsk           ?? market.noAsk,
+      yesBid:        live?.yesBid          ?? market.yesBid,
+      noBid:         live?.noBid           ?? market.noBid,
       threshold:     market.threshold,
       range:         market.range,
-      volumeLabel:   live?.volumeLabel  ?? market.volumeLabel,
+      volumeLabel:   live?.volumeLabel     ?? market.volumeLabel,
     });
   });
 }
 
 function printCycleReport(
-  snapshots:   MarketSnapshot[],
-  cycleReport: Awaited<ReturnType<AutoTradingEngine['runCycleAsync']>>,
-  cycleNumber: number,
-  elapsed:     number
+  snapshots:    MarketSnapshot[],
+  cycleReport:  Awaited<ReturnType<AutoTradingEngine['runCycleAsync']>>,
+  cycleNumber:  number,
+  elapsed:      number
 ): void {
   const rankedPairs = [...snapshots]
     .filter((s) => s.status === 'live')
@@ -91,11 +96,16 @@ function printCycleReport(
     return acc;
   }, new Map<string, number>());
 
+  const totalExecuted = cycleReport.executions.length + cycleReport.singleLegs.length;
+
   logSection(`⚡ Cycle #${cycleNumber}`, `${elapsed}ms · ${new Date().toISOString()}`);
-  logKeyValue('Scanned',  cycleReport.scannedMarkets);
-  logKeyValue('Eligible', cycleReport.eligibleMarkets);
-  logKeyValue('Executed', cycleReport.executions.length);
-  logKeyValue('Skipped',  cycleReport.skipped.length);
+  logKeyValue('Scanned',    cycleReport.scannedMarkets);
+  logKeyValue('Eligible',   cycleReport.eligibleMarkets);
+  logKeyValue('Executed',   totalExecuted);
+  logKeyValue('Pairs',      cycleReport.executions.length);
+  logKeyValue('SingleLegs', cycleReport.singleLegs.length);
+  logKeyValue('Skipped',    cycleReport.skipped.length);
+  logKeyValue('PendingFills', cycleReport.executions.length > 0 ? '(tracked)' : 0);
 
   logSection('📡 Opportunity Radar', 'cheapest paired entries');
   console.log(renderTableHeader(['Market', 'Pair', 'Edge', 'Liquidity']));
@@ -111,19 +121,27 @@ function printCycleReport(
   });
 
   if (cycleReport.executions.length > 0) {
-    logSection('⚙️ Execution Tape', 'routed orders this cycle');
+    logSection('⚙️ Paired Executions', 'routed pairs this cycle');
     cycleReport.executions.forEach((exec) => {
       const legs = exec.legs
         .map((leg) =>
-          `${leg.leg}@${leg.price.toFixed(3)} x${leg.size}${leg.orderId ? ` [${leg.orderId.slice(0, 8)}]` : ''}`
+          `${leg.leg}@${leg.price.toFixed(3)}×${leg.size}${leg.orderId ? ` [${leg.orderId.slice(0, 8)}]` : ''}`
         )
         .join(' • ');
       console.log(renderExecutionRow(exec.status, exec.marketId, exec.combinedAsk, exec.totalNotional, legs));
       if (exec.error) {
         log('error', `${exec.marketId} execution error.`, exec.error);
       } else {
-        log('success', `${exec.strategyName} → ${exec.prompt}.`, `${exec.rationale} · edge=${exec.expectedEdge.toFixed(4)}`);
+        log('success', `${exec.strategyName} → ${exec.prompt}`, `edge=${exec.expectedEdge.toFixed(4)} · ${exec.rationale}`);
       }
+    });
+  }
+
+  if (cycleReport.singleLegs.length > 0) {
+    logSection('🎯 Single-Leg Executions', 'directional signals this cycle');
+    cycleReport.singleLegs.forEach((exec) => {
+      const tag = `${exec.strategyName} → ${exec.leg}@${exec.price.toFixed(3)}×${exec.size}`;
+      log(exec.status === 'FAILED' ? 'error' : 'success', tag, exec.rationale);
     });
   }
 
@@ -136,11 +154,11 @@ function printCycleReport(
 
   logSection('🪙 Portfolio', 'risk engine state');
   const state = riskEngine.getState();
-  logKeyValue('Daily P&L',       `$${state.dailyPnl.toFixed(2)}`);
-  logKeyValue('Capital',         `$${state.currentCapital.toFixed(2)}`);
-  logKeyValue('Open Notional',   `$${state.openNotional.toFixed(2)}`);
-  logKeyValue('Peak Capital',    `$${state.peakCapital.toFixed(2)}`);
-  logKeyValue('Drawdown',        `${(((state.peakCapital - state.currentCapital) / state.peakCapital) * 100).toFixed(2)}%`);
+  logKeyValue('Daily P&L',     `$${state.dailyPnl.toFixed(2)}`);
+  logKeyValue('Capital',       `$${state.currentCapital.toFixed(2)}`);
+  logKeyValue('Open Notional', `$${state.openNotional.toFixed(2)}`);
+  logKeyValue('Peak Capital',  `$${state.peakCapital.toFixed(2)}`);
+  logKeyValue('Drawdown',      `${(((state.peakCapital - state.currentCapital) / state.peakCapital) * 100).toFixed(2)}%`);
 
   for (const [asset, count] of watchlist.entries()) {
     logKeyValue(asset, count);
@@ -155,23 +173,23 @@ export default async function runLoop(): Promise<void> {
   );
 
   logSection('🔐 Credentials', '.env loaded — values never logged');
-  logKeyValue('PRIVATE_KEY',    secrets.privateKey    ? 'set' : 'MISSING');
-  logKeyValue('API Key',        secrets.apiKey        ? 'set' : 'not set');
-  logKeyValue('API Secret',     secrets.apiSecret     ? 'set' : 'not set');
-  logKeyValue('API Passphrase', secrets.apiPassphrase ? 'set' : 'not set');
+  logKeyValue('PRIVATE_KEY',    secrets.privateKey    ? 'set ✓' : 'MISSING ✗');
+  logKeyValue('API Key',        secrets.apiKey        ? 'set ✓' : 'not set');
+  logKeyValue('API Secret',     secrets.apiSecret     ? 'set ✓' : 'not set');
+  logKeyValue('API Passphrase', secrets.apiPassphrase ? 'set ✓' : 'not set');
   logKeyValue('Signature Type', secrets.signatureType);
-  logKeyValue('Funder',         secrets.funder        ? 'set' : 'not set');
+  logKeyValue('Funder',         secrets.funder        ? 'set ✓' : 'not set');
   logKeyValue('Dry Run',        secrets.dryRun ? 'true (no real orders)' : 'false (LIVE TRADING)');
 
   logSection('🧭 Runtime Config', 'loaded from config/base.yaml');
-  logKeyValue('Mode',           config.app.mode);
-  logKeyValue('Loop Interval',  `${config.app.loopIntervalMs} ms`);
-  logKeyValue('Tracked Markets',config.exchange.markets.length);
-  logKeyValue('Strategies',     strategies.length);
-  logKeyValue('Pair Cost Cap',  config.strategy.pairCostCap.toFixed(2));
-  logKeyValue('Order Size',     secrets.orderSize || config.strategy.defaultOrderSize);
-  logKeyValue('Cooldown',       `${secrets.cooldownSeconds}s`);
-  logKeyValue('Discovery TTL',  '3 min (auto-refresh token IDs)');
+  logKeyValue('Mode',            config.app.mode);
+  logKeyValue('Loop Interval',   `${config.app.loopIntervalMs} ms`);
+  logKeyValue('Tracked Markets', config.exchange.markets.length);
+  logKeyValue('Strategies',      `${strategies.length} (3 paired-entry, 4 single-leg)`);
+  logKeyValue('Pair Cost Cap',   config.strategy.pairCostCap.toFixed(2));
+  logKeyValue('Order Size',      secrets.orderSize || config.strategy.defaultOrderSize);
+  logKeyValue('Cooldown',        `${secrets.cooldownSeconds}s`);
+  logKeyValue('Discovery TTL',   '3 min (auto-refresh token IDs)');
 
   let clobClient: ClobOrderClient | undefined;
 
@@ -200,17 +218,19 @@ export default async function runLoop(): Promise<void> {
     }
   }
 
+  // ── Backtest mode ─────────────────────────────────────────────────────────
   if (config.app.mode === 'backtest') {
     const staticSnapshots = buildSnapshots(new Map());
     new BacktestEngine(strategies).run(staticSnapshots);
     return;
   }
 
+  // ── Paper / Live trading loop ─────────────────────────────────────────────
   const engine = new AutoTradingEngine({
-    mode:           config.app.mode,
-    dryRun:         secrets.dryRun,
-    orderSize:      secrets.orderSize || config.strategy.defaultOrderSize,
-    cooldownSeconds:secrets.cooldownSeconds,
+    mode:            config.app.mode,
+    dryRun:          secrets.dryRun,
+    orderSize:       secrets.orderSize || config.strategy.defaultOrderSize,
+    cooldownSeconds: secrets.cooldownSeconds,
     riskEngine,
     clobClient,
   });
@@ -226,6 +246,8 @@ export default async function runLoop(): Promise<void> {
     running = false;
     log('warn', `${signal} received — shutting down gracefully.`);
 
+    engine.fillTracker.stopPolling();
+
     if (isLive && clobClient?.isReady()) {
       try {
         await clobClient.cancelAll();
@@ -234,16 +256,18 @@ export default async function runLoop(): Promise<void> {
         log('error', 'Could not cancel open orders on shutdown.', err instanceof Error ? err.message : String(err));
       }
     }
+
+    engine.destroy();
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT',  () => void shutdown('SIGINT'));
 
-  log('info', 'Starting trading loop.', `interval=${config.app.loopIntervalMs}ms · markets=${slugs.length}`);
+  log('info', 'Starting trading loop.', `interval=${config.app.loopIntervalMs}ms · markets=${slugs.length} · strategies=${strategies.length}`);
 
   while (running) {
     const cycleStart = Date.now();
-    cycleNumber += 1;
+    cycleNumber     += 1;
 
     const liveData  = await discovery.resolveAll(slugs);
     const snapshots = buildSnapshots(liveData);
@@ -253,7 +277,6 @@ export default async function runLoop(): Promise<void> {
       : engine.runCycle(snapshots, getStrategySignals);
 
     const elapsed = Date.now() - cycleStart;
-
     printCycleReport(snapshots, cycleReport, cycleNumber, elapsed);
 
     const waitMs = Math.max(0, config.app.loopIntervalMs - elapsed);
