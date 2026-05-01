@@ -1,11 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # PolyHFT-Autotrading-V3 — base configuration
 #
-# IMPORTANT — yes_token_id / no_token_id:
-#   These must be real Polymarket CLOB token IDs (64-digit decimal strings).
-#   Fetch live token IDs from the Gamma API before running in live mode:
-#     GET https://gamma-api.polymarket.com/markets?slug=<slug>
-#   The placeholder strings below are for paper/backtest mode only.
+# Token IDs are NOT required here. The bot auto-fetches and caches live token
+# IDs from the Gamma API every 3 minutes (TokenDiscoveryService). If discovery
+# fails for a slug, the bot skips that market for the cycle and retries next.
+#
+# Prices (yes_ask / no_ask etc.) are also refreshed from the CLOB order book
+# every cycle via live discovery — the values below are startup fallbacks only.
 # ─────────────────────────────────────────────────────────────────────────────
 
 app:
@@ -37,8 +38,6 @@ exchange:
       prompt: Bitcoin Up or Down - 5 min
       pair_group: btc-up-down-5m
       reference_price: 95000
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.51
       no_ask: 0.45
       yes_bid: 0.50
@@ -51,8 +50,6 @@ exchange:
       prompt: Bitcoin Up or Down - 15 min
       pair_group: btc-up-down-15m
       reference_price: 95000
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.50
       no_ask: 0.47
       yes_bid: 0.49
@@ -66,8 +63,6 @@ exchange:
       prompt: Ethereum Up or Down - 5 min
       pair_group: eth-up-down-5m
       reference_price: 1800
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.51
       no_ask: 0.46
       yes_bid: 0.50
@@ -80,8 +75,6 @@ exchange:
       prompt: Ethereum Up or Down - 15 min
       pair_group: eth-up-down-15m
       reference_price: 1800
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.50
       no_ask: 0.47
       yes_bid: 0.49
@@ -95,8 +88,6 @@ exchange:
       prompt: Solana Up or Down - 5 min
       pair_group: sol-up-down-5m
       reference_price: 148
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.50
       no_ask: 0.47
       yes_bid: 0.49
@@ -109,8 +100,6 @@ exchange:
       prompt: Solana Up or Down - 15 min
       pair_group: sol-up-down-15m
       reference_price: 148
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.43
       no_ask: 0.52
       yes_bid: 0.42
@@ -124,8 +113,6 @@ exchange:
       prompt: XRP Up or Down - 15 min
       pair_group: xrp-up-down-15m
       reference_price: 2.20
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.43
       no_ask: 0.54
       yes_bid: 0.42
@@ -139,8 +126,6 @@ exchange:
       prompt: Dogecoin Up or Down - 15 min
       pair_group: doge-up-down-15m
       reference_price: 0.19
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.64
       no_ask: 0.31
       yes_bid: 0.63
@@ -154,8 +139,6 @@ exchange:
       prompt: BNB Up or Down - 15 min
       pair_group: bnb-up-down-15m
       reference_price: 590
-      yes_token_id: REPLACE_WITH_REAL_CLOB_TOKEN_ID
-      no_token_id:  REPLACE_WITH_REAL_CLOB_TOKEN_ID
       yes_ask: 0.46
       no_ask: 0.50
       yes_bid: 0.45
@@ -168,7 +151,7 @@ risk:
   max_net_exposure: 0.35
   max_market_exposure: 0.15
   max_order_notional: 1500.0
-  min_order_notional: 25.0
+  min_order_notional: 20.0
   max_daily_loss: 0.06
   max_drawdown: 0.10
   max_kelly_fraction: 0.15

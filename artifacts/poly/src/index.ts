@@ -1,5 +1,11 @@
 import { loadConfig, loadRuntimeSecrets } from './config';
-import { createMarketSnapshot, type CryptoAsset, type MarketType, type MarketSnapshot } from './connectors/polymarket';
+import {
+  createMarketSnapshot,
+  type CryptoAsset,
+  type MarketType,
+  type MarketSnapshot,
+} from './connectors/polymarket';
+import { TokenDiscoveryService } from './connectors/tokenDiscovery';
 import { ClobOrderClient } from './connectors/clobOrderClient';
 import { BacktestEngine } from './backtesting/engine';
 import { AutoTradingEngine } from './execution/engine';
@@ -18,8 +24,11 @@ import {
   renderOpportunityRow,
   renderTableHeader,
 } from './utils/logger';
+import type { LiveMarketQuote } from './connectors/polymarketApi';
 
-const config  = loadConfig('config/base.yaml');
+const CONFIG_PATH = 'config/base.yaml';
+
+const config  = loadConfig(CONFIG_PATH);
 const secrets = loadRuntimeSecrets();
 
 const strategies = [
@@ -32,44 +41,137 @@ const strategies = [
 
 const riskEngine = new RiskEngine(config.risk);
 
-function createSnapshotsFromConfig(): MarketSnapshot[] {
-  return config.exchange.markets.map((market) =>
-    createMarketSnapshot({
-      marketId:      market.pairGroup,
-      slug:          market.slug,
-      conditionId:   `${market.pairGroup}-condition`,
-      asset:         market.asset as CryptoAsset,
-      marketType:    market.marketType as MarketType,
-      intervalLabel: market.intervalLabel,
-      prompt:        market.prompt,
-      pairGroup:     market.pairGroup,
-      referencePrice:market.referencePrice,
-      yesTokenId:    market.yesTokenId,
-      noTokenId:     market.noTokenId,
-      yesAsk:        market.yesAsk,
-      noAsk:         market.noAsk,
-      yesBid:        market.yesBid,
-      noBid:         market.noBid,
-      threshold:     market.threshold,
-      range:         market.range,
-      volumeLabel:   market.volumeLabel,
-    })
-  );
-}
-
-function summarizeWatchlist(snapshots: MarketSnapshot[]): Map<string, number> {
-  return snapshots.reduce((acc, snapshot) => {
-    acc.set(snapshot.asset, (acc.get(snapshot.asset) ?? 0) + 1);
-    return acc;
-  }, new Map<string, number>());
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function getStrategySignals(snapshot: MarketSnapshot) {
   return strategies.flatMap((strategy) => strategy.generateSignals(snapshot));
 }
 
-export default async function run(): Promise<void> {
+function buildSnapshots(liveData: Map<string, LiveMarketQuote>): MarketSnapshot[] {
+  return config.exchange.markets.map((market) => {
+    const live = liveData.get(market.slug);
+
+    return createMarketSnapshot({
+      marketId:      live?.market.id      ?? market.pairGroup,
+      slug:          market.slug,
+      conditionId:   live?.market.conditionId ?? `${market.pairGroup}-condition`,
+      asset:         market.asset as CryptoAsset,
+      marketType:    market.marketType as MarketType,
+      intervalLabel: market.intervalLabel,
+      prompt:        live?.market.question ?? market.prompt,
+      pairGroup:     market.pairGroup,
+      referencePrice:market.referencePrice,
+      yesTokenId:    live?.yesTokenId  ?? market.yesTokenId,
+      noTokenId:     live?.noTokenId   ?? market.noTokenId,
+      yesAsk:        live?.yesAsk      ?? market.yesAsk,
+      noAsk:         live?.noAsk       ?? market.noAsk,
+      yesBid:        live?.yesBid      ?? market.yesBid,
+      noBid:         live?.noBid       ?? market.noBid,
+      threshold:     market.threshold,
+      range:         market.range,
+      volumeLabel:   live?.volumeLabel  ?? market.volumeLabel,
+    });
+  });
+}
+
+function printCycleReport(
+  snapshots:   MarketSnapshot[],
+  cycleReport: Awaited<ReturnType<AutoTradingEngine['runCycleAsync']>>,
+  cycleNumber: number,
+  elapsed:     number
+): void {
+  const rankedPairs = [...snapshots]
+    .filter((s) => s.status === 'live')
+    .sort((a, b) => a.combinedAsk - b.combinedAsk);
+
+  const watchlist = snapshots.reduce((acc, s) => {
+    acc.set(s.asset, (acc.get(s.asset) ?? 0) + 1);
+    return acc;
+  }, new Map<string, number>());
+
+  logSection(`⚡ Cycle #${cycleNumber}`, `${elapsed}ms · ${new Date().toISOString()}`);
+  logKeyValue('Scanned',  cycleReport.scannedMarkets);
+  logKeyValue('Eligible', cycleReport.eligibleMarkets);
+  logKeyValue('Executed', cycleReport.executions.length);
+  logKeyValue('Skipped',  cycleReport.skipped.length);
+
+  logSection('📡 Opportunity Radar', 'cheapest paired entries');
+  console.log(renderTableHeader(['Market', 'Pair', 'Edge', 'Liquidity']));
+  rankedPairs.slice(0, 5).forEach((snapshot) => {
+    console.log(
+      renderOpportunityRow(
+        snapshot.prompt,
+        snapshot.combinedAsk,
+        Math.max(0, 1 - snapshot.combinedAsk),
+        snapshot.volumeLabel
+      )
+    );
+  });
+
+  if (cycleReport.executions.length > 0) {
+    logSection('⚙️ Execution Tape', 'routed orders this cycle');
+    cycleReport.executions.forEach((exec) => {
+      const legs = exec.legs
+        .map((leg) =>
+          `${leg.leg}@${leg.price.toFixed(3)} x${leg.size}${leg.orderId ? ` [${leg.orderId.slice(0, 8)}]` : ''}`
+        )
+        .join(' • ');
+      console.log(renderExecutionRow(exec.status, exec.marketId, exec.combinedAsk, exec.totalNotional, legs));
+      if (exec.error) {
+        log('error', `${exec.marketId} execution error.`, exec.error);
+      } else {
+        log('success', `${exec.strategyName} → ${exec.prompt}.`, `${exec.rationale} · edge=${exec.expectedEdge.toFixed(4)}`);
+      }
+    });
+  }
+
+  if (cycleReport.skipped.length > 0) {
+    logSection('🧱 Deferred', 'held by cooldown or risk guards');
+    cycleReport.skipped.slice(0, 3).forEach((item) => {
+      log('warn', `${item.marketId} deferred.`, item.reason);
+    });
+  }
+
+  logSection('🪙 Portfolio', 'risk engine state');
+  const state = riskEngine.getState();
+  logKeyValue('Daily P&L',       `$${state.dailyPnl.toFixed(2)}`);
+  logKeyValue('Capital',         `$${state.currentCapital.toFixed(2)}`);
+  logKeyValue('Open Notional',   `$${state.openNotional.toFixed(2)}`);
+  logKeyValue('Peak Capital',    `$${state.peakCapital.toFixed(2)}`);
+  logKeyValue('Drawdown',        `${(((state.peakCapital - state.currentCapital) / state.peakCapital) * 100).toFixed(2)}%`);
+
+  for (const [asset, count] of watchlist.entries()) {
+    logKeyValue(asset, count);
+  }
+}
+
+export default async function runLoop(): Promise<void> {
   const isLive = config.app.mode === 'live' && !secrets.dryRun;
+
+  console.log(
+    renderLaunchBanner(config.app.mode, config.exchange.markets.length, strategies.map((s) => s.name))
+  );
+
+  logSection('🔐 Credentials', '.env loaded — values never logged');
+  logKeyValue('PRIVATE_KEY',    secrets.privateKey    ? 'set' : 'MISSING');
+  logKeyValue('API Key',        secrets.apiKey        ? 'set' : 'not set');
+  logKeyValue('API Secret',     secrets.apiSecret     ? 'set' : 'not set');
+  logKeyValue('API Passphrase', secrets.apiPassphrase ? 'set' : 'not set');
+  logKeyValue('Signature Type', secrets.signatureType);
+  logKeyValue('Funder',         secrets.funder        ? 'set' : 'not set');
+  logKeyValue('Dry Run',        secrets.dryRun ? 'true (no real orders)' : 'false (LIVE TRADING)');
+
+  logSection('🧭 Runtime Config', 'loaded from config/base.yaml');
+  logKeyValue('Mode',           config.app.mode);
+  logKeyValue('Loop Interval',  `${config.app.loopIntervalMs} ms`);
+  logKeyValue('Tracked Markets',config.exchange.markets.length);
+  logKeyValue('Strategies',     strategies.length);
+  logKeyValue('Pair Cost Cap',  config.strategy.pairCostCap.toFixed(2));
+  logKeyValue('Order Size',     secrets.orderSize || config.strategy.defaultOrderSize);
+  logKeyValue('Cooldown',       `${secrets.cooldownSeconds}s`);
+  logKeyValue('Discovery TTL',  '3 min (auto-refresh token IDs)');
 
   let clobClient: ClobOrderClient | undefined;
 
@@ -98,6 +200,12 @@ export default async function run(): Promise<void> {
     }
   }
 
+  if (config.app.mode === 'backtest') {
+    const staticSnapshots = buildSnapshots(new Map());
+    new BacktestEngine(strategies).run(staticSnapshots);
+    return;
+  }
+
   const engine = new AutoTradingEngine({
     mode:           config.app.mode,
     dryRun:         secrets.dryRun,
@@ -107,86 +215,58 @@ export default async function run(): Promise<void> {
     clobClient,
   });
 
-  const snapshots = createSnapshotsFromConfig();
-  const watchlist = summarizeWatchlist(snapshots);
-  const rankedPairs = [...snapshots]
-    .filter((s) => s.status === 'live')
-    .sort((a, b) => a.combinedAsk - b.combinedAsk);
+  const discovery = new TokenDiscoveryService();
+  const slugs     = config.exchange.markets.map((m) => m.slug);
 
-  const cycleReport = isLive
-    ? await engine.runCycleAsync(snapshots, getStrategySignals)
-    : engine.runCycle(snapshots, getStrategySignals);
+  let running     = true;
+  let cycleNumber = 0;
 
-  console.log(renderLaunchBanner(config.app.mode, config.exchange.markets.length, strategies.map((s) => s.name)));
+  const shutdown = async (signal: string) => {
+    if (!running) return;
+    running = false;
+    log('warn', `${signal} received — shutting down gracefully.`);
 
-  logSection('🧭 Runtime Snapshot', 'production autotrading profile');
-  logKeyValue('Mode',           config.app.mode);
-  logKeyValue('Loop Interval',  `${config.app.loopIntervalMs} ms`);
-  logKeyValue('Tracked Markets',config.exchange.markets.length);
-  logKeyValue('Strategies',     strategies.length);
-  logKeyValue('Pair Cost Cap',  config.strategy.pairCostCap.toFixed(2));
-  logKeyValue('Order Size',     secrets.orderSize || config.strategy.defaultOrderSize);
-  logKeyValue('Cooldown',       `${secrets.cooldownSeconds}s`);
-
-  logSection('🔐 Credentials', '.env loaded — values never logged');
-  logKeyValue('PRIVATE_KEY',    secrets.privateKey    ? 'set' : 'MISSING');
-  logKeyValue('API Key',        secrets.apiKey        ? 'set' : 'not set');
-  logKeyValue('API Secret',     secrets.apiSecret     ? 'set' : 'not set');
-  logKeyValue('API Passphrase', secrets.apiPassphrase ? 'set' : 'not set');
-  logKeyValue('Signature Type', secrets.signatureType);
-  logKeyValue('Funder',         secrets.funder        ? 'set' : 'not set');
-  logKeyValue('Dry Run',        secrets.dryRun ? 'true (no real orders)' : 'false (LIVE TRADING)');
-
-  logSection('🪙 Crypto Watchlist', 'binary cards by asset');
-  for (const [asset, count] of watchlist.entries()) {
-    logKeyValue(asset, count);
-  }
-
-  logSection('📡 Opportunity Radar', 'ranked by cheapest paired entry');
-  logKeyValue('Eligible Markets', cycleReport.eligibleMarkets);
-  logKeyValue('Executed Pairs',   cycleReport.executions.length);
-  logKeyValue('Skipped Pairs',    cycleReport.skipped.length);
-  console.log(renderTableHeader(['Market', 'Pair', 'Edge', 'Liquidity']));
-  rankedPairs.slice(0, 5).forEach((snapshot) => {
-    console.log(renderOpportunityRow(snapshot.prompt, snapshot.combinedAsk, Math.max(0, 1 - snapshot.combinedAsk), snapshot.volumeLabel));
-  });
-
-  logSection('⚙️ Execution Tape', 'paired order routing results');
-  logKeyValue('Scanned',  cycleReport.scannedMarkets);
-  logKeyValue('Approved', cycleReport.approvedMarkets);
-
-  if (cycleReport.executions.length > 0) {
-    cycleReport.executions.forEach((exec) => {
-      const legs = exec.legs
-        .map((leg) => `${leg.leg}@${leg.price.toFixed(3)} x${leg.size}${leg.orderId ? ` [${leg.orderId.slice(0, 8)}]` : ''}`)
-        .join(` • `);
-      console.log(renderExecutionRow(exec.status, exec.marketId, exec.combinedAsk, exec.totalNotional, legs));
-      if (exec.error) {
-        log('error', `${exec.marketId} execution error.`, exec.error);
-      } else {
-        log('success', `${exec.strategyName} → ${exec.prompt}.`, `${exec.rationale} • edge=${exec.expectedEdge.toFixed(4)}`);
+    if (isLive && clobClient?.isReady()) {
+      try {
+        await clobClient.cancelAll();
+        log('success', 'All open orders cancelled before exit.');
+      } catch (err) {
+        log('error', 'Could not cancel open orders on shutdown.', err instanceof Error ? err.message : String(err));
       }
-    });
-  } else {
-    log('warn', 'No qualifying paired entries this cycle.');
+    }
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT',  () => void shutdown('SIGINT'));
+
+  log('info', 'Starting trading loop.', `interval=${config.app.loopIntervalMs}ms · markets=${slugs.length}`);
+
+  while (running) {
+    const cycleStart = Date.now();
+    cycleNumber += 1;
+
+    const liveData  = await discovery.resolveAll(slugs);
+    const snapshots = buildSnapshots(liveData);
+
+    const cycleReport = isLive
+      ? await engine.runCycleAsync(snapshots, getStrategySignals)
+      : engine.runCycle(snapshots, getStrategySignals);
+
+    const elapsed = Date.now() - cycleStart;
+
+    printCycleReport(snapshots, cycleReport, cycleNumber, elapsed);
+
+    const waitMs = Math.max(0, config.app.loopIntervalMs - elapsed);
+    if (waitMs > 0 && running) {
+      await sleep(waitMs);
+    }
   }
 
-  if (cycleReport.skipped.length > 0) {
-    logSection('🧱 Deferred Queue', 'held back by cooldown or risk guards');
-    cycleReport.skipped.slice(0, 4).forEach((item) => {
-      log('warn', `${item.marketId} deferred.`, item.reason);
-    });
-  }
-
-  if (config.app.mode === 'backtest') {
-    new BacktestEngine(strategies).run(snapshots);
-  }
-
-  log('success', 'PolyHFT cycle complete.', `${cycleReport.executions.length} pair(s) processed`);
+  log('success', 'PolyHFT shutdown complete.');
 }
 
 if (require.main === module) {
-  run().catch((err) => {
+  runLoop().catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     log('error', 'Runtime crashed.', msg);
     process.exitCode = 1;

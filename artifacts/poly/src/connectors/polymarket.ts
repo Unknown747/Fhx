@@ -102,8 +102,8 @@ export function createMarketSnapshot(input: {
   prompt: string;
   pairGroup: string;
   referencePrice: number;
-  yesTokenId: string;
-  noTokenId: string;
+  yesTokenId?: string;
+  noTokenId?: string;
   yesAsk: number;
   noAsk: number;
   yesBid?: number;
@@ -135,7 +135,7 @@ export function createMarketSnapshot(input: {
     volumeLabel: input.volumeLabel,
     yes: {
       label: 'YES',
-      tokenId: input.yesTokenId,
+      tokenId: input.yesTokenId ?? '',
       bestBid: Number(yesMid.toFixed(3)),
       bestAsk: Number(input.yesAsk.toFixed(3)),
       impliedProbability: clampProbability(input.yesAsk),
@@ -143,7 +143,7 @@ export function createMarketSnapshot(input: {
     },
     no: {
       label: 'NO',
-      tokenId: input.noTokenId,
+      tokenId: input.noTokenId ?? '',
       bestBid: Number(noMid.toFixed(3)),
       bestAsk: Number(input.noAsk.toFixed(3)),
       impliedProbability: clampProbability(input.noAsk),

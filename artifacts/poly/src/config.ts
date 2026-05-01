@@ -44,8 +44,8 @@ export interface MarketConfig {
   referencePrice: number;
   threshold?: number;
   range?: { low?: number; high?: number };
-  yesTokenId: string;
-  noTokenId: string;
+  yesTokenId?: string;
+  noTokenId?: string;
   yesAsk: number;
   noAsk: number;
   yesBid: number;
@@ -133,8 +133,8 @@ function parseMarket(m: Record<string, unknown>): MarketConfig {
     referencePrice:Number(m.reference_price ?? m.referencePrice ?? 0),
     threshold:     m.threshold != null ? Number(m.threshold) : undefined,
     range:         m.range as MarketConfig['range'] | undefined,
-    yesTokenId:    String(m.yes_token_id  ?? m.yesTokenId  ?? `${m.slug ?? 'unknown'}-yes`),
-    noTokenId:     String(m.no_token_id   ?? m.noTokenId   ?? `${m.slug ?? 'unknown'}-no`),
+    yesTokenId:    m.yes_token_id != null ? String(m.yes_token_id) : (m.yesTokenId != null ? String(m.yesTokenId) : undefined),
+    noTokenId:     m.no_token_id  != null ? String(m.no_token_id)  : (m.noTokenId  != null ? String(m.noTokenId)  : undefined),
     yesAsk,
     noAsk,
     yesBid:        Number(m.yes_bid ?? m.yesBid ?? Math.max(0, yesAsk - 0.02)),
