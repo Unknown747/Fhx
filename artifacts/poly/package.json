@@ -1,20 +1,22 @@
 {
   "name": "polyhft-autotrading-v3",
-  "version": "0.1.0",
-  "description": "Production-style TypeScript autotrading bot for Polymarket-style binary and range markets.",
+  "version": "3.0.0",
+  "description": "Production TypeScript autotrading bot for Polymarket binary markets — Polygon mainnet, 7-strategy stack.",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "scripts": {
-    "clean": "rimraf dist",
-    "build": "npm run clean && tsc",
-    "backtest": "node dist/examples/runBacktest.js",
-    "paper": "node dist/examples/paperTrading.js",
-    "live": "node dist/examples/liveMarkets.js",
+    "build":     "rimraf dist && tsc",
+    "start":     "node dist/index.js",
+    "paper":     "DRY_RUN=true node dist/index.js",
+    "live":      "DRY_RUN=false node dist/index.js",
+    "markets":   "node dist/examples/liveMarkets.js",
     "test:full": "node dist/test/fullTest.js",
-    "start": "node dist/index.js"
+    "typecheck": "tsc --noEmit",
+    "clean":     "rimraf dist"
   },
   "files": [
-    "dist"
+    "dist",
+    "config",
+    ".env.example"
   ],
   "engines": {
     "node": ">=18"
